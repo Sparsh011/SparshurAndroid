@@ -1,0 +1,6 @@
+#!/bin/sh
+# Run the pinned project tool; graph data and dependencies stay out of source control.
+set -eu
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$project_dir"
+exec "$project_dir/.tools/venv/bin/python" -m code_review_graph "$@" --repo "$project_dir"

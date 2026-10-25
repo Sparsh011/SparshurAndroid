@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Bridge · Message observatory</title><link rel="stylesheet" href="/style.css">
+  <script src="/viewer.js" defer></script>
+</head>
+<body>
+  <header><a class="wordmark" href="/">BRIDGE <span>/ LEARNING LABS 01 + 02</span></a><span id="connection" role="status">Connecting…</span></header>
+  <main>
+    <section class="intro"><div><p class="eyebrow">YOUR MAC'S VIEW OF THE WIRE</p><h1>From locked bytes<br>to verified text.</h1><p class="lede">Pair Android with this Mac. Compare readable samples, phone-only encryption, and messages this Mac can verify and decrypt.</p></div>
+      <aside><span class="eyebrow">THE EXPERIMENT</span><ol><li>Connect your Mac to your phone's hotspot.</li><li>Create a pairing QR below using the Mac's hotspot IPv4 address.</li><li>Scan and pair in Android, then encrypt and send. The Local key lab offers the original comparison.</li></ol><p>Different local IP addresses. One shared network.</p></aside></section>
+    <section class="route" aria-label="Message route"><div><small>01 / ANDROID</small><strong>Encrypts &amp; signs locally</strong></div><span>→</span><div><small>02 / LOCAL HTTP</small><strong>Transports the bytes</strong></div><span>→</span><div><small>03 / THIS MAC</small><strong>Verifies & decrypts paired messages</strong></div></section>
+    <section class="pairing-panel" aria-labelledby="pairing-heading">
+      <div><p class="eyebrow">LESSON 02 / TRUST THE RIGHT MAC</p><h2 id="pairing-heading">Pair from this screen.</h2>
+      <p>Private keys live in this Mac's Keychain. The QR contains public keys and a one-time secret, valid for 5 minutes. Scan it in Android's <strong>Pair &amp; decrypt</strong> lesson.</p>
+      <p id="pair-status" role="status">Checking Mac CryptoKit recipient…</p>
+      <p class="label">Mac public-key fingerprint (compare on Android)</p><code id="mac-fingerprint"></code>
+      <label class="label" for="pair-host">Address Android should connect to</label>
+      <input id="pair-host" list="local-addresses" placeholder="Mac hotspot IPv4" autocomplete="off"><datalist id="local-addresses"></datalist>
+      <p class="label">Use the hotspot's Mac address. Emulator only: 10.0.2.2. Port follows this page.</p>
+      <button id="new-pairing" type="button">Create 5-minute pairing QR</button>
+      <p class="label">One phone supported. Completing a new pairing replaces the old phone; creating a QR alone does not.</p></div>
+      <div id="pairing-code"><p class="empty">Create a QR when your phone is ready.</p></div>
+    </section>
+    <div class="section-heading"><h2>Live observations</h2><p><span id="duplicate-count">0</span> duplicates ignored · last 40 observations · memory only</p></div>
+    <section class="comparison">
+      <article class="lane plain"><div class="lane-top"><div><p class="eyebrow">READABLE PATH</p><h2>An open postcard.</h2></div><span class="count" id="plain-count">0</span></div><p>Anyone able to inspect this HTTP traffic can read the sample. Sending it is a deliberate comparison action.</p><div id="plain-events" class="events" aria-live="polite"><div class="empty">Waiting for a readable demo message…</div></div></article>
+      <article class="lane encrypted"><div class="lane-top"><div><p class="eyebrow">ENCRYPTED PATH</p><h2>A locked envelope.</h2></div><span class="count" id="encrypted-count">0</span></div><p>AES-256-GCM ciphertext, plus public metadata. The secret key stays in Android Keystore, so this laptop cannot open it.</p><div id="encrypted-events" class="events" aria-live="polite"><div class="empty">Waiting for an encrypted envelope…</div></div></article>
+    </section>
+    <article class="lane encrypted paired-lane"><div class="lane-top"><div><p class="eyebrow">PAIRED PATH / AUTHENTICATED &amp; DECRYPTED</p><h2>The Mac can open this one.</h2></div><span class="count" id="paired-count">0</span></div><p>Android's signature is checked, HPKE unwraps a fresh content key, and ChaCha20-Poly1305 verifies the payload. Only then is text displayed locally. Network receipts contain no plaintext.</p><div id="paired-events" class="events" aria-live="polite"><div class="empty">Pair Android and send your first decryptable message…</div></div></article>
+    <section class="explain"><div><p class="eyebrow">WHY THE RANDOM-LOOKING TEXT?</p><h3>Binary, wearing a text jacket.</h3><p>The nonce and ciphertext use Base64 so JSON can carry their bytes. Base64 alone hides nothing. AES-GCM encrypts the original lab; ChaCha20-Poly1305 encrypts paired messages.</p></div><div><p class="eyebrow">WHAT DOES THE RECEIPT PROVE?</p><h3>Two different receipts.</h3><p>Original lab receipts only acknowledge arrival. Paired-message receipts are signed by this Mac and checked on Android after successful authenticated decryption.</p></div><div><p class="eyebrow">WHAT COMES NEXT?</p><h3>A foundation to review.</h3><p>This lesson adds one-way paired encryption. A production relay, multiple devices, reordering and forward secrecy remain future work. Human protocol review is required.</p></div></section>
+    <footer>LOCAL LEARNING EXPERIMENT · HTTP TRANSPORT · PAIRED PATH AUTHENTICATED · SAMPLE TEXT ONLY<br>Readable samples are intentionally exposed. No message bodies are saved to disk or terminal logs. Restart clears the display, but paired replay state persists in Keychain.</footer>
+  </main>
+</body>
+</html>

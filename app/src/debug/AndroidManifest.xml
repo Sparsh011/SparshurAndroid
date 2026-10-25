@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- HTTP exists only in the explicitly labelled, private-network learning lab. -->
+    <application android:usesCleartextTraffic="true"
+        tools:replace="android:usesCleartextTraffic">
+        <activity android:name=".network.relay.RelayActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+    </application>
+</manifest>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <style name="Theme.Sparshur" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#131316</item>
+        <item name="android:colorAccent">#F72681</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

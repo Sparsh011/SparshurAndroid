@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Sparshur</string>
+    <string name="widget_title">Sparshur connected devices</string>
+    <string name="widget_heading">Sparshur</string>
+    <string name="widget_description">Your paired devices, one tap away.</string>
+    <string name="widget_subtitle">Tap a device to send clipboard</string>
+    <string name="widget_send_to">Send clipboard to %1$s</string>
+    <string name="widget_manage">Open Sparshur →</string>
+    <string name="widget_empty">Pair your Mac to show it here.</string>
+</resources>
