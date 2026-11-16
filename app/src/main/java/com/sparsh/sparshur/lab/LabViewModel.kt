@@ -12,6 +12,7 @@ import com.sparsh.sparshur.lab.crypto.LabEnvelope
 import com.sparsh.sparshur.lab.network.LabClient
 import com.sparsh.sparshur.lab.network.LabWire
 import com.sparsh.sparshur.lab.network.LocalEndpoint
+import com.sparsh.sparshur.lab.network.PairedEndpoint
 import com.sparsh.sparshur.lab.paired.PairedProtocol
 import com.sparsh.sparshur.lab.paired.PairingStore
 import java.net.ConnectException
@@ -94,7 +95,7 @@ class LabViewModel(application: Application) : AndroidViewModel(application) {
             val identity = pairing.identity()
             try {
                 val response = client.pair(
-                    LocalEndpoint(bundle.peer.host, bundle.peer.port),
+                    bundle.peer.endpoint,
                     PairedProtocol.pairRequest(bundle, identity)
                 )
                 PairedProtocol.confirm(bundle, identity, response)
@@ -141,7 +142,8 @@ class LabViewModel(application: Application) : AndroidViewModel(application) {
         if (state.pairedWire.isEmpty()) return
         val wire = state.pairedWire
         networkTask(
-            if (tamper) "Sending an intentionally altered COPY…" else "Waiting for the Mac's signed receipt…"
+            if (tamper) "Sending an intentionally altered COPY…" else "Waiting for the Mac's signed receipt…",
+            ::PairedEndpoint
         ) { endpoint ->
             val message = JSONObject(wire)
             if (tamper) {
@@ -182,7 +184,7 @@ class LabViewModel(application: Application) : AndroidViewModel(application) {
         val address = state.address
         val port = state.port.toIntOrNull() ?: 0
         task("Saving the connection…", {
-            val endpoint = LocalEndpoint(address, port)
+            val endpoint = PairedEndpoint(address, port)
             check(pairing.peer()?.pairingId == peer.pairingId) { "Pairing changed. Reopen connection settings." }
             peer.copy(host = endpoint.address, port = endpoint.port).also(pairing::savePeer)
         }) { state = state.copy(peer = it, result = "Connection saved.") }
@@ -262,26 +264,25 @@ class LabViewModel(application: Application) : AndroidViewModel(application) {
         }) { state = state.copy(result = it) }
     }
 
-    fun connect() = networkTask("Checking the local receiver…") { endpoint -> client.check(endpoint) }
+    fun connect() = networkTask("Checking the local receiver…", ::LocalEndpoint) { endpoint -> client.check(endpoint) }
 
     fun sendEncrypted() {
         val body = state.wire.takeIf { state.envelope != null } ?: return
-        networkTask("Sending encrypted bytes…") { endpoint -> client.send(endpoint, body) }
+        networkTask("Sending encrypted bytes…", ::LocalEndpoint) { endpoint -> client.send(endpoint, body) }
     }
 
     fun sendPlaintext() {
         val text = state.text
-        networkTask("Sending readable sample text…") { endpoint ->
+        networkTask("Sending readable sample text…", ::LocalEndpoint) { endpoint ->
             client.send(endpoint, LabWire.plaintext(text))
         }
     }
 
-    private fun networkTask(label: String, operation: (LocalEndpoint) -> String) {
+    private fun <T> networkTask(label: String, endpoint: (String, Int) -> T, operation: (T) -> String) {
         val address = state.address
         val port = state.port
         task(label, {
-            val endpoint = LocalEndpoint(address, port.toIntOrNull() ?: 0)
-            operation(endpoint)
+            operation(endpoint(address, port.toIntOrNull() ?: 0))
         }) { state = state.copy(result = it) }
     }
 

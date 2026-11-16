@@ -41,7 +41,7 @@ class DevicesFeatureTest {
         })
         model = provider[DevicesViewModel::class.java]
         val pairing = provider[LabViewModel::class.java]
-        compose.setContent { SparshurTheme { AppScreen(model, pairing, { it() }, {}, {}, {}) } }
+        compose.setContent { SparshurTheme { AppScreen(model, pairing, { it() }, {}, {}, {}, {}) } }
         compose.waitUntil(10000) { !model.loading && !model.primaryBusy }
     }
     @After fun restore() {

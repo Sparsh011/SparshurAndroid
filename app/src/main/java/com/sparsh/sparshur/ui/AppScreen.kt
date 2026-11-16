@@ -34,7 +34,7 @@ import com.sparsh.sparshur.widget.DevicesWidgetProvider
 
 @Composable
 fun AppScreen(devices: DevicesViewModel, pairing: LabViewModel, network: (() -> Unit) -> Unit,
-    send: (String) -> Unit, scan: () -> Unit, experiments: () -> Unit) {
+    send: (String) -> Unit, receiveFile: () -> Unit, scan: () -> Unit, experiments: () -> Unit) {
     var tab by rememberSaveable { mutableStateOf("Devices") }
     var detail by rememberSaveable { mutableStateOf<String?>(null) }
     var smsDeviceId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -153,6 +153,7 @@ fun AppScreen(devices: DevicesViewModel, pairing: LabViewModel, network: (() -> 
                                         smsDeviceId = device.id; devices.open(device.id); detail = "sms"
                                     } }
                                 }
+                                if (BuildConfig.DEBUG) QuietButton("Receive file from Mac", receiveFile)
                                 SecondaryText("Only devices you’ve paired appear here. A saved pairing doesn’t indicate current reachability.")
                             }
                         }

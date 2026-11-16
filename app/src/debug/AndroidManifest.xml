@@ -6,5 +6,21 @@
         tools:replace="android:usesCleartextTraffic">
         <activity android:name=".network.relay.RelayActivity" android:exported="false"
             android:windowSoftInputMode="adjustResize" />
+        <provider
+            android:name=".devices.ClipboardFileProvider"
+            android:authorities="${applicationId}.clipboard"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/clipboard_file_paths" />
+        </provider>
+        <activity android:name=".devices.ShareFileActivity" android:exported="true" android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

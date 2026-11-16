@@ -11,7 +11,7 @@ import com.google.crypto.tink.subtle.ChaCha20Poly1305
 import com.google.crypto.tink.subtle.Ed25519Sign
 import com.google.crypto.tink.subtle.Ed25519Verify
 import com.google.crypto.tink.util.Bytes
-import com.sparsh.sparshur.lab.network.LocalEndpoint
+import com.sparsh.sparshur.lab.network.PairedEndpoint
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
@@ -25,7 +25,7 @@ object PairedProtocol {
     private val rng = SecureRandom()
     fun b64(bytes: ByteArray): String = Base64.encode(bytes)
     fun bytes(value: String, size: IntRange): ByteArray {
-        require(value.length <= 12000) { "Encoded field is too large." }
+        require(value.length <= 4 * ((size.last + 2) / 3)) { "Encoded field is too large." }
         val decoded = Base64.decode(value)
         require(decoded.size in size && b64(decoded) == value) { "Invalid encoded field." }
         return decoded
@@ -64,6 +64,8 @@ object PairedProtocol {
         val host: String,
         val port: Int
     ) {
+        val endpoint: PairedEndpoint get() = PairedEndpoint(host, port)
+
         fun json(): JSONObject = JSONObject().put("pairing_id", pairingId).put("recipient_id", recipientId)
             .put("hpke_key", b64(hpkeKey)).put("signing_key", b64(signingKey)).put("host", host).put("port", port)
     }
@@ -77,7 +79,7 @@ object PairedProtocol {
     fun peer(body: JSONObject): Peer {
         val port = number(body, "port")
         require(port in 1024..65535)
-        val endpoint = LocalEndpoint(string(body, "host"), port.toInt())
+        val endpoint = PairedEndpoint(string(body, "host"), port.toInt())
         return Peer(
             uuid(string(body, "pairing_id")),
             uuid(string(body, "recipient_id")),
@@ -124,18 +126,22 @@ object PairedProtocol {
         ).verify(bytes(string(response, "signature"), 64..64), message.toByteArray())
     }
     fun aad(body: JSONObject): String = "bridge-lab|2|${body.getString("pairing_id")}|${body.getString("sender_id")}|" +
-        "${body.getString("recipient_id")}|text|${number(body, "counter")}|${body.getString("message_id")}"
+        "${body.getString("recipient_id")}|${body.getString("message_type")}|${number(body, "counter")}|${body.getString("message_id")}"
     fun signedMessage(body: JSONObject): String = "bridge-v2/message|" + aad(body) +
         "|${body.getString("nonce")}|${body.getString("ciphertext")}|${body.getString("wrapped_key")}"
 
     fun encrypt(peer: Peer, identity: Identity, counter: Long, text: String): JSONObject {
-        require(counter in 1..1000000) { "Pairing counter exhausted. Pair again to start a new epoch." }
         val plaintext = text.toByteArray(Charsets.UTF_8)
         require(plaintext.size in 1..4096) { "Use 1 to 4096 UTF-8 bytes of sample text." }
+        return encryptPayload(peer, identity, counter, "text", plaintext)
+    }
+
+    internal fun encryptPayload(peer: Peer, identity: Identity, counter: Long, type: String, plaintext: ByteArray): JSONObject {
+        require(counter in 1..1000000) { "Pairing counter exhausted. Pair again to start a new epoch." }
         val body = JSONObject().put("lab_version", 2).put("mode", "paired").put("suite", SUITE)
             .put("pairing_id", peer.pairingId).put("sender_id", identity.senderId)
             .put("recipient_id", peer.recipientId).put("message_id", UUID.randomUUID().toString())
-            .put("message_type", "text").put("counter", counter)
+            .put("message_type", type).put("counter", counter)
         val contentKey = ByteArray(32).also(rng::nextBytes)
         try {
             // Tink's raw ChaCha output is nonce(12) || ciphertext || tag(16).

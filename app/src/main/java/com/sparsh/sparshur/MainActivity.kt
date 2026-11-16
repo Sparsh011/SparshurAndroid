@@ -10,6 +10,7 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.sparsh.sparshur.devices.DevicesActivity
 import com.sparsh.sparshur.devices.DevicesViewModel
+import com.sparsh.sparshur.devices.ReceiveFileActivity
 import com.sparsh.sparshur.lab.LabActivity
 import com.sparsh.sparshur.lab.LabViewModel
 import com.sparsh.sparshur.lab.LocalNetworkActivity
@@ -30,6 +31,7 @@ class MainActivity : LocalNetworkActivity() {
                 AppScreen(
                     devices, pairing, ::withLocalNetworkPermission,
                     send = { id -> startActivity(DevicesActivity.intent(this, id)) },
+                    receiveFile = { startActivity(Intent(this, ReceiveFileActivity::class.java)) },
                     scan = {
                         val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE)
                             .enableAutoZoom().build()

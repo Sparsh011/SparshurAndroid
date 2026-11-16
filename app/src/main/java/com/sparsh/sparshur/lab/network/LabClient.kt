@@ -1,20 +1,33 @@
 package com.sparsh.sparshur.lab.network
 
 import com.sparsh.sparshur.BuildConfig
+import com.sparsh.sparshur.lab.paired.PairedFile
 import com.sparsh.sparshur.lab.paired.PairedProtocol
 import java.net.HttpURLConnection
 import java.net.Proxy
 import java.net.URL
 import org.json.JSONObject
 
-class LabClient {
-    fun pair(endpoint: LocalEndpoint, request: JSONObject): JSONObject =
-        request(endpoint, "/pairing/complete", request.toString())
+class LabClient internal constructor(private val openConnection: (URL) -> HttpURLConnection) {
+    constructor() : this({ it.openConnection(Proxy.NO_PROXY) as HttpURLConnection })
 
-    fun paired(endpoint: LocalEndpoint, message: JSONObject, peer: PairedProtocol.Peer): Boolean =
-        PairedProtocol.verifyReceipt(peer, message, request(endpoint, "/paired-message", message.toString()))
+    fun pair(endpoint: PairedEndpoint, request: JSONObject): JSONObject =
+        request(endpoint.url, "/pairing/complete", request.toString())
+
+    fun paired(endpoint: PairedEndpoint, message: JSONObject, peer: PairedProtocol.Peer): Boolean =
+        PairedProtocol.verifyReceipt(peer, message, request(endpoint.url, "/paired-message", message.toString()))
+
+    internal fun pushFile(peer: PairedProtocol.Peer, message: JSONObject): Boolean =
+        PairedProtocol.verifyReceipt(peer, message, request(peer.endpoint.url, "/paired-file", message.toString(), timeout = 30000))
+
+    internal fun pullFile(peer: PairedProtocol.Peer, message: JSONObject): JSONObject =
+        request(peer.endpoint.url, "/paired-file/pull", message.toString(), PairedFile.MAX_WIRE_BYTES, timeout = 30000)
+
+    internal fun acknowledgeFile(peer: PairedProtocol.Peer, message: JSONObject) {
+        PairedProtocol.verifyReceipt(peer, message, request(peer.endpoint.url, "/paired-file/ack", message.toString()))
+    }
     fun check(endpoint: LocalEndpoint): String {
-        val response = request(endpoint, "/health", null)
+        val response = request(endpoint.url, "/health", null)
         check(
             response.getString("service") == "bridge-learning-observer" &&
                 response.getInt("lab_version") == 1
@@ -23,7 +36,7 @@ class LabClient {
     }
 
     fun send(endpoint: LocalEndpoint, body: String): String {
-        val response = request(endpoint, "/message", body)
+        val response = request(endpoint.url, "/message", body)
         check(response.getBoolean("accepted")) { "The receiver did not accept this observation." }
         return if (response.getBoolean("duplicate")) {
             "Already observed: the receiver ignored this duplicate message ID."
@@ -32,12 +45,12 @@ class LabClient {
         }
     }
 
-    private fun request(endpoint: LocalEndpoint, path: String, body: String?): JSONObject {
+    private fun request(baseUrl: String, path: String, body: String?, responseLimit: Int = 4096, timeout: Int = 5000): JSONObject {
         check(BuildConfig.DEBUG) { "Local HTTP sending is available only in the debug learning build." }
-        val connection = URL(endpoint.url + path).openConnection(Proxy.NO_PROXY) as HttpURLConnection
+        val connection = openConnection(URL(baseUrl + path))
         try {
             connection.connectTimeout = 5000
-            connection.readTimeout = 5000
+            connection.readTimeout = timeout
             connection.instanceFollowRedirects = false
             connection.setRequestProperty("Accept", "application/json")
             if (body != null) {
@@ -58,11 +71,11 @@ class LabClient {
             }
             val bytes = connection.inputStream.use { input ->
                 val output = java.io.ByteArrayOutputStream()
-                val chunk = ByteArray(512)
+                val chunk = ByteArray(8192)
                 while (true) {
                     val count = input.read(chunk)
                     if (count < 0) break
-                    check(output.size() + count <= 4096) { "Unexpected receiver response size." }
+                    check(output.size() + count <= responseLimit) { "Unexpected receiver response size." }
                     output.write(chunk, 0, count)
                 }
                 output.toByteArray()

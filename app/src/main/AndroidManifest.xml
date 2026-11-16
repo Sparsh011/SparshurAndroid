@@ -16,6 +16,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Sparshur">
         <activity android:name=".lab.LabActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".devices.ReceiveFileActivity" android:exported="false" />
         <activity
             android:name=".devices.DevicesActivity"
             android:exported="false"

@@ -7,10 +7,14 @@ class ClipRejected(val title: String, val detail: String) : IllegalArgumentExcep
 
 /** Never resolves a URI or inspects the text of a clip marked sensitive. */
 object ClipboardText {
-    fun read(clip: ClipData?): String {
-        if (clip == null || clip.itemCount == 0) throw ClipRejected("Clipboard is empty", "Copy some text, then tap your Mac again.")
-        if (clip.description.extras?.getBoolean("android.content.extra.IS_SENSITIVE") == true)
+    internal fun checkSensitive(clip: ClipData?) {
+        if (clip?.description?.extras?.getBoolean("android.content.extra.IS_SENSITIVE") == true)
             throw ClipRejected("Sensitive clip blocked", "This item is marked sensitive and won’t be shared.")
+    }
+
+    fun read(clip: ClipData?): String {
+        if (clip == null || clip.itemCount == 0) throw ClipRejected("Clipboard is empty", "Copy text or an image, or share a file directly to Sparshur.")
+        checkSensitive(clip)
         if (!clip.description.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN) &&
             !clip.description.hasMimeType(ClipDescription.MIMETYPE_TEXT_HTML))
             throw ClipRejected("Text clips only", "Copy text rather than a file or image, then try again.")

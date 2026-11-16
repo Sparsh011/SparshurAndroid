@@ -87,7 +87,8 @@ class CryptoContractTest {
         }
         listOf(
             "8.8.8.8", "example.com", "http://192.168.1.1", "0.0.0.0", "192.168.1.256",
-            "192.168.1.01", "127.1", "192.168.1.1/path", "localhost", "192.168.1.1@8.8.8.8"
+            "192.168.1.01", "127.1", "192.168.1.1/path", "localhost", "192.168.1.1@8.8.8.8",
+            "100.64.0.0", "100.100.123.45", "100.127.255.255"
         ).forEach {
             assertThrows(IllegalArgumentException::class.java) { LocalEndpoint(it, 8787) }
         }

@@ -13,8 +13,16 @@ import com.google.crypto.tink.subtle.Ed25519Sign
 import com.google.crypto.tink.subtle.Ed25519Verify
 import com.google.crypto.tink.util.Bytes
 import com.google.crypto.tink.util.SecretBytes
+import com.sparsh.sparshur.lab.network.LabClient
+import com.sparsh.sparshur.lab.network.PairedEndpoint
+import com.sparsh.sparshur.lab.paired.PairedFile
 import com.sparsh.sparshur.lab.paired.PairedProtocol as P
+import java.net.HttpURLConnection
+import java.net.Proxy
 import java.security.GeneralSecurityException
+import java.util.concurrent.TimeUnit
+import mockwebserver3.MockResponse
+import mockwebserver3.MockWebServer
 import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -37,6 +45,74 @@ class PairedProtocolTest {
         )
     }
     private fun bundle(v: JSONObject) = P.bundle(v.getJSONObject("bundle").toString(), now = 1000000000)
+
+    @Test fun fileFramePreservesBinaryDataAndRejectsInvalidMetadata() {
+        val fixture = JSONObject(javaClass.classLoader!!.getResourceAsStream("paired-file-test-vector.json")!!
+            .bufferedReader().use { it.readText() })
+        val frame = P.bytes(fixture.getString("frame"), 5..PairedFile.MAX_PAYLOAD_BYTES)
+        val file = PairedFile.decode(frame)
+        assertEquals(fixture.getString("name"), file.name)
+        assertEquals(fixture.getString("mime"), file.mime)
+        assertArrayEquals(P.bytes(fixture.getString("data"), 0..4), file.data)
+        assertArrayEquals(file.data, PairedFile.decode(file.encode()).data)
+        assertThrows(IllegalArgumentException::class.java) { PairedFile.decode(frame.copyOf(8)) }
+        assertThrows(IllegalArgumentException::class.java) { file.copy(name = "../image.png") }
+        assertThrows(IllegalArgumentException::class.java) { file.copy(data = ByteArray(PairedFile.MAX_BYTES + 1)) }
+    }
+
+    @Test fun pairedQrAndSavedDeviceAcceptVpnBoundariesLanAndLoopback() {
+        val v = vector()
+        val qr = v.getJSONObject("bundle")
+        for (host in listOf(
+            "100.64.0.0", "100.100.123.45", "100.127.255.255",
+            "10.0.2.2", "172.20.10.2", "192.168.43.55", "127.0.0.1"
+        )) {
+            qr.put("host", host)
+            val imported = bundle(v).peer
+            val saved = P.peer(JSONObject(imported.json().toString()))
+            assertEquals(host, imported.host)
+            assertEquals(host, saved.host)
+            assertEquals(P.fingerprint(imported), P.fingerprint(saved))
+            assertEquals("http://$host:8787", saved.endpoint.url)
+        }
+    }
+
+    @Test fun pairedQrSavedDeviceAndSendRejectAddressesOutsideTheAllowedRanges() {
+        val v = vector()
+        val qr = v.getJSONObject("bundle")
+        val saved = bundle(v).peer.json()
+        for (host in listOf(
+            "100.63.255.255", "100.128.0.0", "100.64.0.256", "100.064.0.1", "100.64.1",
+            "http://100.64.0.1", "100.64.0.1/path", "mac.example.ts.net", "127.0.0.2", "8.8.8.8"
+        )) {
+            qr.put("host", host)
+            assertThrows(host, IllegalArgumentException::class.java) { bundle(v) }
+            assertThrows(host, IllegalArgumentException::class.java) { P.peer(saved.put("host", host)) }
+            assertThrows(host, IllegalArgumentException::class.java) { PairedEndpoint(host, 8787) }
+        }
+    }
+
+    @Test fun sendsPairedEnvelopeToVpnAddressAndVerifiesSignedReceipt() {
+        val v = vector()
+        v.getJSONObject("bundle").put("host", "100.100.123.45")
+        val peer = P.peer(bundle(v).peer.json())
+        val message = v.getJSONObject("message")
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(MockResponse.Builder().code(202).body(v.getJSONObject("receipt").toString()).build())
+            val client = LabClient { url ->
+                // Check the destination before substituting the local test listener for OS VPN routing.
+                assertEquals("http://100.100.123.45:8787/paired-message", url.toString())
+                server.url(url.path).toUrl().openConnection(Proxy.NO_PROXY) as HttpURLConnection
+            }
+
+            assertFalse(client.paired(peer.endpoint, message, peer))
+            val request = checkNotNull(server.takeRequest(2, TimeUnit.SECONDS))
+            assertEquals("POST", request.method)
+            assertEquals("/paired-message", request.url.encodedPath)
+            assertEquals(message.toString(), request.body?.utf8())
+        }
+    }
 
     @Test fun pairingProofAndMacConfirmationMatchSwift() {
         val v = vector()

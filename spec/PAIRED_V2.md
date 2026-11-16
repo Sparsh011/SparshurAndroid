@@ -7,9 +7,12 @@ credentials. Strict field sets, integers (not booleans), and sizes are checked.
 
 ## Pairing over a trusted local display
 
-Loopback-only POST /api/pairing/new takes exactly {host, port}; host is a private
-literal IPv4/127.0.0.1 and port 1024..65535. Response has a JSON bundle and a
-locally generated PNG QR. The secret-bearing bundle has exactly:
+The reference dashboard's loopback-only POST /api/pairing/new takes exactly
+{host, port} and generates LAN or loopback bundles. Android accepts canonical
+numeric IPv4 addresses in the private LAN ranges, `127.0.0.1`, and `100.64.0.0/10`
+for direct pairing over Tailscale with a compatible Mac receiver. The port is
+1024..65535 (8787 by default). The same address rules apply when Android reloads
+a saved peer or sends a paired message. The secret-bearing QR bundle has exactly:
 
     bridge_pairing:2, pairing_id, recipient_id, hpke_key, signing_key,
     host, port, expires_at, secret

@@ -41,9 +41,9 @@ The app now opens **Devices**, using the native Mac’s charcoal surfaces and pi
 accent. **Learn** contains the offline field guide and preserved hands-on crypto
 labs; **Settings** contains pairing, widget setup and connection details.
 
-- Tap a device (in the app or widget) to send the text clipboard without a Paste
-  or second Send action. A focused transfer activity performs one explicit read.
-  Sensitive, non-text, empty and oversized clips are blocked.
+- Tap a device in the app or widget to send copied text or an image. A focused
+  transfer activity reads the clipboard once and blocks sensitive, empty, and
+  oversized clips.
 - The saved **Paired Mac** uses the existing debug v2 encrypted transport and
   signed receipt verification. Only the actual saved pairing appears in the app
   and widget. An unpaired installation shows setup, with no sample recipients or
@@ -66,6 +66,43 @@ The project folder is **SparshurAndroid**, Gradle project and launcher name are
 corrected ID creates a separate Android app sandbox. Pair this installation
 again; the previous installation and its Keystore keys are left untouched.
 The original nonexportable keys are never exported to migrate the name.
+
+### Direct clipboard send over Tailscale
+
+1. Connect Android and the Mac to the same Tailscale network. Turn off Wi-Fi on
+   Android to use cellular, leave the Mac on Wi-Fi, and power off the Mac mini.
+2. On a Mac receiver build with Tailscale support, open **Pair phone** and
+   generate a QR using the Mac's numeric Tailscale IPv4 and port **8787**.
+3. In the Android debug app, scan it through **Pair a Mac**, compare the
+   fingerprint, and complete the pairing.
+4. Copy a short text clip and tap the paired Mac in **Devices**. Check that the
+   Android send screen confirms the signed receipt and the Mac displays the clip.
+
+With the debug app paired to a test Mac and the test APK installed, the same send
+can be exercised through instrumentation. Replace `MAC_VPN_IPV4` with the Mac's
+numeric VPN address.
+
+```sh
+adb shell am instrument -w \
+  -e class 'com.sparsh.sparshur.ClipboardTransferTest#sendsClipboardToSavedPeerAndShowsVerifiedReceipt' \
+  -e pairedReceiverHost MAC_VPN_IPV4 \
+  com.sparsh.sparshur.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+### Send files and images
+
+Use file-capable debug builds of Sparshur on both devices and the existing
+paired LAN or Tailscale connection. Share a file or photo from an Android app,
+choose **Sparshur**, then pick a paired device under **Send to…** or use
+**Copy on this device** to put the file on the Android clipboard. You can also copy an image and
+tap the paired Mac in **Devices** or in the widget. On the Mac, open **Clipboard**
+and use **Save file…** on the new item. Received images also go to the Mac clipboard.
+
+To send the other way, choose **Send file to Android…** in the Mac's **Clipboard**
+screen. On Android open **Receive file from Mac**, tap **Check for file**, and
+save it with the system file picker. Transfers handle one file at a time, up to
+5 MiB. The Mac keeps a queued file in memory until the phone saves it and sends
+confirmation, or until you cancel or quit.
 
 ## Lesson 02 — pair and decrypt on Mac
 

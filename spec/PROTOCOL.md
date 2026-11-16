@@ -4,7 +4,8 @@ The owner's later Mac mini networking lesson is specified separately in
 [RELAY_V1.md](RELAY_V1.md). It implements WSS connection authentication only;
 neither local message format below is silently reused as a relay envelope.
 
-The next independent lesson is specified in [PAIRED_V2.md](PAIRED_V2.md).
+The next independent lesson is specified in [PAIRED_V2.md](PAIRED_V2.md),
+with direct bidirectional attachments in [PAIRED_FILES.md](PAIRED_FILES.md).
 The v1 messages below retain their original behavior.
 
 This is an isolated, user-requested encryption / plaintext comparison exercise.

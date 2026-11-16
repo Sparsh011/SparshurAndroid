@@ -25,9 +25,11 @@ Android paths below start at `app/src/main/java/com/sparsh/sparshur/`.
 6. `lab/paired/PairedProtocol.kt` — exact wire fields, HMAC proofs, Ed25519,
    ChaCha20-Poly1305, HPKE and signed receipt verification. All cryptographic
    primitives come from Tink/JCA; application code only composes the protocol.
-7. `lab/network/LocalEndpoint.kt`, `LabClient.kt` — validate local numeric IPv4,
-   post the pairing/message, check the pinned Mac's receipt. Address changes
-   affect routing, not trusted keys. This does not bind a specific interface.
+7. `lab/network/LocalEndpoint.kt`, `LabClient.kt` — validate numeric IPv4, post
+   the pairing/message, and check the pinned Mac's receipt. `PairedEndpoint`
+   also accepts Tailscale IPv4 (`100.64.0.0/10`). Android handles VPN routing.
+   The original comparison lab uses `LocalEndpoint`. Editing the address
+   preserves the pinned keys.
 8. `../Sparshur/Sparshur/App/AppModel.swift` and `Services/ReceiverCoordinator.swift`
    — one native app-owned model, menu/window lifetime and receiver coordination.
 9. `../Sparshur/Sparshur/Networking/` — bounded TCP/HTTP parsing and native listener.

@@ -12,9 +12,10 @@ rules have dedicated screens. Original encryption lessons remain under
   saved pairing, they show setup instructions. There are no sample recipients,
   invented connection states or simulated delivery confirmations. The current
   protocol supports one Mac, not multi-peer discovery.
-- Tap the device to send the current text clipboard without a Paste or second
+- Tap the device to send copied text or an image without a Paste or second
   Send action. Android briefly focuses the transfer activity for one explicit
-  read. Empty, non-text, sensitive and >4096 UTF-8-byte clips are blocked.
+  read. Empty and sensitive clips are blocked. Text is capped at 4096 UTF-8
+  bytes and image or file transfers at 5 MiB.
 - Actual delivery uses the existing debug v2 sender and signed receipt checks.
   A saved pairing is labelled **Paired**; it does not imply current reachability.
   Release sending remains disabled because the production transport is unfinished.
