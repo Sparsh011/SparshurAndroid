@@ -17,9 +17,10 @@ import okhttp3.TlsVersion
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import okio.ByteString.Companion.toByteString
 
 enum class RelayPhase { STOPPED, CONNECTING, AUTHENTICATING, CONNECTED, WAITING_TO_RETRY, FAILED }
-enum class RelayProblem { NETWORK, TLS, AUTHORIZATION, PROTOCOL, IDENTITY, RETRY_LIMIT }
+enum class RelayProblem { NETWORK, TLS, AUTHORIZATION, PROTOCOL, IDENTITY, RETRY_LIMIT, UPGRADE_REQUIRED }
 data class RelayStatus(val phase: RelayPhase, val problem: RelayProblem? = null, val retry: Int = 0)
 
 internal data class RelayTiming(
@@ -30,17 +31,26 @@ internal data class RelayTiming(
     val maxRetries: Int = 6
 )
 
-/** Connection/auth only. There is intentionally no arbitrary text/payload send API yet. */
+internal fun interface RelayPacketHandler {
+    fun handle(packet: RelayPacket)
+}
+
+internal class RelayUpgradeRequired : Exception()
+
+/** Foreground transport for already prepared relay packets. */
 class RelayConnection internal constructor(
-    private val endpoint: RelayEndpoint,
+    private val configuration: RelayConfiguration,
     private val signer: RelaySigner,
     private val client: OkHttpClient,
     private val timer: ScheduledExecutorService,
     private val timing: RelayTiming,
+    private val now: () -> Long = { System.currentTimeMillis() / 1000 },
+    private val handlePacket: RelayPacketHandler = RelayPacketHandler { throw RelayUpgradeRequired() },
+    private val onAcknowledgement: (RelayFrame.Acknowledgement) -> Unit = {},
     private val onStatus: (RelayStatus) -> Unit
 ) : AutoCloseable {
-    constructor(endpoint: RelayEndpoint, signer: RelaySigner, onStatus: (RelayStatus) -> Unit) : this(
-        endpoint, signer, newClient(), Executors.newSingleThreadScheduledExecutor(), RelayTiming(), onStatus
+    constructor(configuration: RelayConfiguration, signer: RelaySigner, onStatus: (RelayStatus) -> Unit) : this(
+        configuration, signer, newClient(), Executors.newSingleThreadScheduledExecutor(), RelayTiming(), onStatus = onStatus
     )
 
     private val lock = Any()
@@ -54,6 +64,8 @@ class RelayConnection internal constructor(
     private var active = false
     private var disposed = false
     private var phase = RelayPhase.STOPPED
+    private data class Pending(val digest: ByteString, val attempts: Int)
+    private val pending = mutableMapOf<String, Pending>()
 
     init { RelayAuth.uuid(signer.deviceId) }
 
@@ -86,17 +98,17 @@ class RelayConnection internal constructor(
         stableTask = null
         socket?.cancel()
         socket = null
+        pending.clear()
     }
 
     private fun open() {
         if (!active || disposed) return
         val attempt = ++generation
-        val nonce = RelayAuth.encoded(ByteArray(32).also(random::nextBytes))
-        var session: String? = null
-        var challenged = false
+        val nonce = ByteArray(32).also(random::nextBytes).toByteString()
+        var issued: RelayChallenge? = null
         publish(RelayStatus(RelayPhase.CONNECTING, retry = retries))
         deadline = timer.schedule({ failed(attempt, RelayProblem.NETWORK, true) }, timing.deadlineMs, TimeUnit.MILLISECONDS)
-        val request = Request.Builder().url(endpoint.httpUrl)
+        val request = Request.Builder().url(configuration.endpoint.httpUrl)
             .header("Sec-WebSocket-Protocol", RelayEndpoint.SUBPROTOCOL).build()
         try {
             socket = client.newWebSocket(request, object : WebSocketListener() {
@@ -110,62 +122,73 @@ class RelayConnection internal constructor(
                     publish(RelayStatus(RelayPhase.AUTHENTICATING, retry = retries))
                     deadline?.cancel(false)
                     deadline = timer.schedule({ failed(attempt, RelayProblem.NETWORK, true) }, timing.deadlineMs, TimeUnit.MILLISECONDS)
-                    enqueue(attempt, webSocket, RelayAuth.hello(signer.deviceId, nonce))
+                    enqueue(attempt, webSocket, RelayFrame.Hello(signer.deviceId, nonce))
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
-                    var signingInput: Pair<String, ByteArray>? = null
+                    failed(attempt, RelayProblem.PROTOCOL, false)
+                }
+
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                    var challengeToSign: RelayChallenge? = null
                     synchronized(lock) {
                         if (!current(attempt)) return
                         try {
-                            val frame = RelayAuth.parse(text)
-                            when (RelayAuth.string(frame, "type")) {
-                                "challenge" -> {
-                                    check(phase == RelayPhase.AUTHENTICATING && !challenged)
-                                    RelayAuth.fields(frame, "version type session_id challenge")
-                                    val issuedSession = RelayAuth.uuid(RelayAuth.string(frame, "session_id"))
-                                    session = issuedSession
-                                    val signed = RelayAuth.transcript(endpoint, signer.deviceId, nonce, issuedSession, RelayAuth.string(frame, "challenge"))
-                                    challenged = true
-                                    signingInput = issuedSession to signed
+                            when (val frame = RelayFrame.decode(bytes)) {
+                                is RelayFrame.Challenge -> {
+                                    check(phase == RelayPhase.AUTHENTICATING && issued == null)
+                                    frame.value.validate(configuration, nonce, now())
+                                    issued = frame.value
+                                    challengeToSign = frame.value
                                 }
-                                "ready" -> {
-                                    check(phase == RelayPhase.AUTHENTICATING && challenged)
-                                    RelayAuth.fields(frame, "version type device_id session_id")
-                                    check(RelayAuth.string(frame, "device_id") == signer.deviceId && RelayAuth.string(frame, "session_id") == session)
+                                is RelayFrame.Ready -> {
+                                    check(phase == RelayPhase.AUTHENTICATING && issued?.sessionId == frame.sessionId &&
+                                        frame.deviceId == signer.deviceId)
                                     deadline?.cancel(false)
                                     publish(RelayStatus(RelayPhase.CONNECTED, retry = retries))
                                     stableTask = timer.schedule({ synchronized(lock) {
                                         if (current(attempt) && phase == RelayPhase.CONNECTED) retries = 0
                                     } }, timing.stableMs, TimeUnit.MILLISECONDS)
                                 }
-                                "error" -> {
-                                    RelayAuth.fields(frame, "version type code")
-                                    check(RelayAuth.string(frame, "code") in setOf("unauthorized", "revoked", "busy", "unsupported", "rate_limited"))
-                                    failed(attempt, RelayProblem.AUTHORIZATION, false)
+                                RelayFrame.AuthRejected -> failed(attempt, RelayProblem.AUTHORIZATION, false)
+                                is RelayFrame.Deliver -> {
+                                    check(phase == RelayPhase.CONNECTED && frame.packet.recipientId == signer.deviceId)
+                                    handlePacket.handle(frame.packet)
+                                }
+                                is RelayFrame.Acknowledgement -> {
+                                    check(phase == RelayPhase.CONNECTED)
+                                    acknowledge(frame)
                                 }
                                 else -> failed(attempt, RelayProblem.PROTOCOL, false)
                             }
+                        } catch (_: RelayUpgradeRequired) {
+                            failed(attempt, RelayProblem.UPGRADE_REQUIRED, false)
                         } catch (_: Exception) {
                             failed(attempt, RelayProblem.PROTOCOL, false)
                         }
                     }
-                    // Do not hold the session lock across Keystore work. Stop/deadlines can
-                    // invalidate this attempt even if the platform signing operation stalls.
-                    val input = signingInput ?: return
-                    val signature = try { signer.sign(input.second) } catch (_: Exception) {
+                    // Keystore work must not stop a disconnect or deadline.
+                    val challenge = challengeToSign ?: return
+                    val signature = try {
+                        signer.sign(RelayAuth.transcript(configuration, signer.deviceId, challenge)).toByteString()
+                    } catch (_: Exception) {
                         failed(attempt, RelayProblem.IDENTITY, false)
                         return
                     }
                     synchronized(lock) {
-                        if (current(attempt) && phase == RelayPhase.AUTHENTICATING) {
-                            try { enqueue(attempt, webSocket, RelayAuth.response(signer.deviceId, input.first, signature)) }
-                            catch (_: Exception) { failed(attempt, RelayProblem.IDENTITY, false) }
+                        if (!current(attempt) || phase != RelayPhase.AUTHENTICATING) return
+                        if (signature.size != 64) {
+                            failed(attempt, RelayProblem.IDENTITY, false)
+                            return
+                        }
+                        try {
+                            challenge.validate(configuration, nonce, now())
+                            enqueue(attempt, webSocket, RelayFrame.Authenticate(signer.deviceId, challenge, signature))
+                        } catch (_: Exception) {
+                            failed(attempt, RelayProblem.PROTOCOL, false)
                         }
                     }
                 }
-
-                override fun onMessage(webSocket: WebSocket, bytes: ByteString) { failed(attempt, RelayProblem.PROTOCOL, false) }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                     // Never display/log arbitrary remote close reasons or HTTP error bodies.
@@ -197,8 +220,32 @@ class RelayConnection internal constructor(
 
     private fun current(attempt: Long): Boolean = active && !disposed && attempt == generation
 
-    private fun enqueue(attempt: Long, webSocket: WebSocket, frame: String) {
-        if (webSocket.queueSize() + frame.length > 8192 || !webSocket.send(frame)) failed(attempt, RelayProblem.NETWORK, true)
+    internal fun sendPrepared(packet: RelayPacket) = synchronized(lock) {
+        val connection = checkNotNull(socket)
+        check(phase == RelayPhase.CONNECTED)
+        require(packet.senderId == signer.deviceId)
+        val digest = packet.digest()
+        val previous = pending[packet.messageId]
+        require(previous == null || previous.digest == digest)
+        // OkHttp serializes writes. Its queued bytes include a write in progress.
+        check(connection.queueSize() == 0L && pending.values.sumOf { it.attempts } < 32)
+        pending[packet.messageId] = Pending(digest, (previous?.attempts ?: 0) + 1)
+        check(enqueue(generation, connection, RelayFrame.Submit(packet)))
+    }
+
+    private fun acknowledge(frame: RelayFrame.Acknowledgement) {
+        val entry = checkNotNull(pending[frame.messageId])
+        check(entry.digest == frame.digest)
+        if (entry.attempts == 1) pending.remove(frame.messageId)
+        else pending[frame.messageId] = entry.copy(attempts = entry.attempts - 1)
+        onAcknowledgement(frame)
+    }
+
+    private fun enqueue(attempt: Long, webSocket: WebSocket, frame: RelayFrame): Boolean {
+        val data = frame.encode()
+        val accepted = webSocket.queueSize() + data.size <= MAX_RELAY_FRAME && webSocket.send(data)
+        if (!accepted) failed(attempt, RelayProblem.NETWORK, true)
+        return accepted
     }
 
     private fun failed(attempt: Long, problem: RelayProblem, retry: Boolean) = synchronized(lock) {

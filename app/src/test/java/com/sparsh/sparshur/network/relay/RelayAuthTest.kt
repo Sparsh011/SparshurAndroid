@@ -3,76 +3,92 @@ package com.sparsh.sparshur.network.relay
 import com.google.crypto.tink.subtle.Ed25519Sign
 import com.google.crypto.tink.subtle.Ed25519Verify
 import java.security.GeneralSecurityException
+import java.util.Base64
+import okio.ByteString.Companion.decodeHex
+import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 
 class RelayAuthTest {
-    private fun vector() = JSONObject(javaClass.classLoader!!.getResourceAsStream("relay-auth-test-vectors.json")!!
+    private fun vector(name: String) = JSONObject(javaClass.classLoader!!.getResourceAsStream("$name.json")!!
         .bufferedReader().use { it.readText() })
 
-    @Test fun publicOpenSslVectorMatchesTinkAndEveryAuthContextIsBound() {
-        val v = vector()
-        val endpoint = RelayEndpoint.parse(v.getString("endpoint"))
-        val signed = RelayAuth.transcript(endpoint, v.getString("device_id"), v.getString("client_nonce"),
-            v.getString("session_id"), v.getString("challenge"))
-        assertEquals(v.getString("transcript"), String(signed, Charsets.UTF_8))
-        val signature = Ed25519Sign(RelayAuth.decoded(v.getString("seed"), 32)).sign(signed)
-        assertEquals(v.getString("signature"), RelayAuth.encoded(signature))
-        val verify = Ed25519Verify(RelayAuth.decoded(v.getString("public_key"), 32))
-        verify.verify(signature, signed)
-        val changes = listOf(
-            v.getString("transcript").replace("bridge-relay-v1/auth", "bridge-v2/pair"),
-            v.getString("transcript").replace("relay.example.test", "other.example.test"),
-            v.getString("transcript").replace(v.getString("device_id"), "33333333-3333-4333-8333-333333333333"),
-            v.getString("transcript").replace(v.getString("session_id"), "44444444-4444-4444-8444-444444444444"),
-            v.getString("transcript").replace(v.getString("client_nonce"), RelayAuth.encoded(ByteArray(32) { 9 })),
-            v.getString("transcript").replace(v.getString("challenge"), RelayAuth.encoded(ByteArray(32) { 8 }))
+    @Test fun sharedAuthVectorMatchesTinkAndBindsEveryContext() {
+        val v = vector("relay-auth")
+        val config = RelayConfiguration(RelayEndpoint.parse(v.getString("relay_url")), v.getString("relay_id"))
+        fun bytes(name: String) = Base64.getDecoder().decode(v.getString(name))
+        val challenge = RelayChallenge(
+            config.relayId, v.getString("session_id"), bytes("client_nonce").toByteString(),
+            bytes("challenge").toByteString(), v.getLong("expires_at").toULong()
         )
-        changes.forEach { assertThrows(GeneralSecurityException::class.java) { verify.verify(signature, it.toByteArray()) } }
-        assertEquals(RelayAuth.parse(v.getJSONObject("hello").toString()),
-            RelayAuth.parse(RelayAuth.hello(v.getString("device_id"), v.getString("client_nonce"))))
-        assertEquals(RelayAuth.parse(v.getJSONObject("auth").toString()),
-            RelayAuth.parse(RelayAuth.response(v.getString("device_id"), v.getString("session_id"), signature)))
+        val signed = RelayAuth.transcript(config, v.getString("device_id"), challenge)
+        val transcript = v.getString("signing_bytes")
+        assertEquals(transcript, String(signed, Charsets.UTF_8))
+        val signature = bytes("signature")
+        val verify = Ed25519Verify(bytes("signing_public_key"))
+        verify.verify(signature, signed)
+        // Tink may randomize signing. Both signatures must verify over the exact transcript.
+        verify.verify(Ed25519Sign(bytes("signing_seed")).sign(signed), signed)
+        val parts = transcript.split('|')
+        for (index in parts.indices) {
+            val changed = parts.toMutableList().apply { this[index] += "x" }.joinToString("|")
+            assertThrows(GeneralSecurityException::class.java) { verify.verify(signature, changed.toByteArray()) }
+        }
     }
 
-    @Test fun endpointRejectsDowngradesCredentialUrlsRedirectInputsAndAmbiguousCanonicalization() {
+    @Test fun allNineSharedWireVectorsRoundTripAndDigestMatches() {
+        val frames = vector("relay-wire").getJSONObject("frames_hex")
+        assertEquals(9, frames.length())
+        frames.keys().forEach { name ->
+            val data = frames.getString(name).decodeHex()
+            assertEquals(name, data, RelayFrame.decode(data).encode())
+        }
+        val submit = RelayFrame.decode(frames.getString("submit").decodeHex()) as RelayFrame.Submit
+        val forwarded = RelayFrame.decode(frames.getString("forwarded").decodeHex()) as RelayFrame.Forwarded
+        assertEquals(submit.packet.messageId, forwarded.messageId)
+        assertEquals(submit.packet.digest(), forwarded.digest)
+        assertEquals("08011009".decodeHex(), RelayFrame.decode("10090801".decodeHex()).encode())
+    }
+
+    @Test fun wireRejectsUnknownDuplicateZeroAndMalformedFields() {
+        val frames = vector("relay-wire").getJSONObject("frames_hex")
+        val submit = frames.getString("submit")
+        val nested = submit.removePrefix("0801100552b501")
+        val bad = listOf(
+            "08001009", "080110090801", "080110096801", "0001", "0a01011009", "0d01", "0881001009",
+            "080110055200", "08ffffffffffffffffffff01", "080110091a0178", "08011005520201",
+            "0801100552b701" + nested + "4001", "0801100552b701" + nested + "3801",
+            frames.getString("hello").replaceFirst("3333", "ff33"),
+            frames.getString("hello").dropLast(2)
+        )
+        bad.forEach { assertThrows(Exception::class.java) { RelayFrame.decode(it.decodeHex()) } }
+        assertThrows(IllegalArgumentException::class.java) {
+            RelayFrame.decode(ByteArray(MAX_RELAY_FRAME + 1).toByteString())
+        }
+        val packet = (RelayFrame.decode(submit.decodeHex()) as RelayFrame.Submit).packet
+        assertThrows(IllegalArgumentException::class.java) {
+            packet.copy(protectedBody = ByteArray(32769).toByteString())
+        }
+    }
+
+    @Test fun configuredUrlPreservesExactBytesAndRejectsAmbiguity() {
         val suffix = RelayEndpoint.PATH
-        val rejected = listOf("ws://example.test$suffix", "https://example.test$suffix", "wss://example.test/",
-            "wss://user:pass@example.test$suffix", "wss://@example.test$suffix", "wss://example.test$suffix?token=x",
-            "wss://example.test$suffix#fragment", "wss://example.test:443$suffix", "wss://EXAMPLE.test$suffix",
-            "wss://example.test/a/../bridge/v1/ws", "wss://example.test/bridge%2fv1/ws", " wss://example.test$suffix",
-            "wss://example.test$suffix\n", "wss://example.test\\@evil.test$suffix")
+        val rejected = listOf(
+            "ws://example.test$suffix", "https://example.test$suffix", "wss://example.test/",
+            "wss://user:pass@example.test$suffix", "wss://@example.test$suffix", "wss://example.test$suffix?",
+            "wss://example.test$suffix#", "wss://example.test:0$suffix", "wss://example.test:65536$suffix", "wss://example.test/v1/%72elay",
+            "wss://EXAMPLE.test$suffix", "wss://example.test/a/../v1/relay", " wss://example.test$suffix",
+            "wss://example.test$suffix\n", "wss://example.test\\@evil.test$suffix", "wss://ex|ample.test$suffix"
+        )
         rejected.forEach { assertThrows(it, IllegalArgumentException::class.java) { RelayEndpoint.parse(it) } }
-        assertEquals("wss://localhost:8443$suffix", RelayEndpoint.parse("wss://localhost:8443$suffix").url)
-        assertEquals("wss://[::1]:8443$suffix", RelayEndpoint.parse("wss://[::1]:8443$suffix").url)
-    }
-
-    @Test fun controlParserRejectsDuplicatesCoercionsNestingTrailingContentAndOversize() {
-        val bad = listOf("{\"version\":1,\"version\":1}", "{\"version\":\"1\"}", "{\"version\":true}",
-            "{\"version\":1.0}", "{\"version\":01}", "{version:1}", "{'version':1}", "{\"version\":1,}",
-            "{\"version\":1}{}", "{\"version\":1,\"type\":{}}", "{\"version\":1,\"type\":null}",
-            "{\"version\":1,\"type\":\"chall\\u0065nge\"}", "{\"version\":1,\"type\":\"bad text\"}",
-            "{\"version\":1\u000b}", "{\"version\":1,\"type\":\"${"a".repeat(2048)}\"}")
-        bad.forEach { assertThrows(it.take(80), IllegalArgumentException::class.java) { RelayAuth.parse(it) } }
-        val frame = RelayAuth.parse(" \n { \"type\" : \"challenge\", \"version\" : 1 } \t")
-        assertEquals("challenge", RelayAuth.string(frame, "type"))
-        assertThrows(IllegalArgumentException::class.java) { RelayAuth.fields(frame, "version type challenge session_id") }
-    }
-
-    @Test fun fuzzedInvalidControlsCannotCoerceAChallengeOrVersion() {
-        val random = java.util.Random(11)
-        repeat(400) {
-            val field = listOf("version", "session_id", "challenge", "type")[random.nextInt(4)]
-            val text = JSONObject().put("version", 1).put("type", "challenge")
-                .put("session_id", "22222222-2222-4222-8222-222222222222")
-                .put("challenge", RelayAuth.encoded(ByteArray(32)))
-                .put(field, if (random.nextBoolean()) true else JSONObject.NULL).toString()
-            assertThrows(IllegalArgumentException::class.java) { RelayAuth.parse(text) }
+        listOf("localhost:8443", "[::1]:8443", "example.test:443").forEach {
+            val url = "wss://$it$suffix"
+            assertEquals(url, RelayEndpoint.parse(url).url)
         }
-        listOf("not-base64", RelayAuth.encoded(ByteArray(31)), RelayAuth.encoded(ByteArray(32)).trimEnd('=')).forEach {
-            assertThrows(IllegalArgumentException::class.java) { RelayAuth.decoded(it, 32) }
+        val endpoint = RelayEndpoint.parse("wss://example.test$suffix")
+        listOf("", "a b", "a|b", "a".repeat(129)).forEach {
+            assertThrows(IllegalArgumentException::class.java) { RelayConfiguration(endpoint, it) }
         }
-        assertThrows(IllegalArgumentException::class.java) { RelayAuth.uuid("11111111-1111-1111-8111-111111111111") }
     }
 }
