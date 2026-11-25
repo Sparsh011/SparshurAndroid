@@ -11,29 +11,24 @@ do not read SMS or the clipboard. The device-first app supports explicit clipboa
 choice and local SMS rule previews; see below.
 No background services, cloud services, accounts or message logs.
 
-## Mac mini relay networking — started 2026-10-24
+## Mac mini relay networking
 
-The complete [relay implementation plan](docs/RELAY_IMPLEMENTATION.md) separates
-the Go relay on Mac mini from the receiving Mac app and covers pairing, live
-routing, durable delivery, reverse clipboard replies, background work and SMS.
-The current Android slice is **connection/authentication only**: debug Settings
-→ **Mac mini relay**, on Android 10+. Configure a canonical
-`wss://your-relay-host/bridge/v1/ws` with a valid TLS 1.3 certificate and explicitly
-enroll the screen's existing public signing identity on the Go relay. Leaving the
-screen stops it. It never sends clipboard/SMS or auto-connects on launch.
+On Android 10+, open debug Settings → **Mac mini relay**. Enter the canonical
+`wss://your-relay-host/v1/relay` URL and the configured **Relay ID**. Enroll
+the Android and Mac public signing identities using the Go service's offline
+`relayctl`. The app authenticates with its existing wrapped Ed25519 signing
+identity over TLS 1.3. The screen starts on explicit Connect and stops when you
+leave it.
 
-The selected first deployment is **private VPN (Tailscale/WireGuard)**. The VPN
-is managed by the devices' VPN apps; Sparshur still uses WSS with a normally
-validated certificate and enrolled-device authentication. Provider, hostname,
-certificate setup and mini deployment are pending. No public relay ingress is
-part of the first deployment.
+Android and Mac use the shared [protobuf relay transport](spec/RELAY_V1.md)
+with the Go relay. The tests use the shared [auth](spec/relay-auth.json) and
+[wire](spec/relay-wire.json) vectors. Authentication confirms access to the
+relay. Incoming deliveries require the end-to-end upgrade, and this screen
+sends no clipboard or SMS messages.
 
-The Go/Swift side must implement [the exact relay auth contract](spec/RELAY_V1.md)
-and consume [the public auth vectors](spec/relay-auth-test-vectors.json). No live
-relay is deployed by this Android change. “Authenticated to relay” is not a Mac
-delivery receipt. The original local labs and current device sends keep their
-existing behavior; relay payload routing waits for a new interoperable pairing
-and envelope format. See [ADR 0005](docs/adr/0005-mac-mini-relay.md).
+The first deployment uses a private, OS-managed VPN with a trusted TLS
+certificate. Mini deployment and the live phone-to-Mac connection check
+are pending. See the [relay implementation plan](docs/RELAY_IMPLEMENTATION.md).
 
 ## Android app — Device first
 

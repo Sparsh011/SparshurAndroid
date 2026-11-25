@@ -14,6 +14,8 @@ import java.util.concurrent.Executors
 class RelayViewModel(application: Application) : AndroidViewModel(application) {
     var endpoint by mutableStateOf("")
         private set
+    var relayId by mutableStateOf("")
+        private set
     var status by mutableStateOf(RelayStatus(RelayPhase.STOPPED))
         private set
     var notice by mutableStateOf("Loading the existing signing identity…")
@@ -49,7 +51,11 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun editEndpoint(value: String) {
-        if (value.length <= 512 && status.phase in setOf(RelayPhase.STOPPED, RelayPhase.FAILED)) endpoint = value
+        if (value.length <= 2048 && status.phase in setOf(RelayPhase.STOPPED, RelayPhase.FAILED)) endpoint = value
+    }
+
+    fun editRelayId(value: String) {
+        if (value.length <= 128 && status.phase in setOf(RelayPhase.STOPPED, RelayPhase.FAILED)) relayId = value
     }
 
     fun foreground() { interactive = true }
@@ -62,9 +68,9 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
 
     fun connect() {
         if (!interactive || closed || deviceId.isEmpty()) return
-        val destination = try { RelayEndpoint.parse(endpoint) } catch (_: Exception) {
+        val destination = try { RelayConfiguration(RelayEndpoint.parse(endpoint), relayId) } catch (_: Exception) {
             status = RelayStatus(RelayPhase.STOPPED)
-            notice = "Use a canonical wss://host[:port]/bridge/v1/ws URL without credentials or query parameters."
+            notice = "Enter the configured Relay ID and a canonical wss://host[:port]/v1/relay URL."
             return
         }
         val current = ++operation

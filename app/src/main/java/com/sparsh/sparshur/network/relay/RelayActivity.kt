@@ -42,7 +42,8 @@ class RelayActivity : LocalNetworkActivity() {
                             SecondaryText("The connection stops when you leave this screen. Nothing runs in the background.")
                         }
                         AppField(model.endpoint, model::editEndpoint, "Relay WSS URL",
-                            placeholder = "wss://relay.example.com/bridge/v1/ws")
+                            placeholder = "wss://relay.example.com/v1/relay")
+                        AppField(model.relayId, model::editRelayId, "Relay ID")
                         if (Build.VERSION.SDK_INT >= 37 && model.status.phase in setOf(RelayPhase.STOPPED, RelayPhase.FAILED)) {
                             SecondaryText("A relay on your Wi-Fi or private network may need local-network permission. Public internet relays don’t need it.")
                             QuietButton("Allow access to a local relay", {
@@ -64,6 +65,7 @@ class RelayActivity : LocalNetworkActivity() {
                                 RelayProblem.PROTOCOL -> "The relay did not follow the expected connection protocol. Check its version and configuration."
                                 RelayProblem.IDENTITY -> "The saved signing identity could not be used. No key was replaced."
                                 RelayProblem.RETRY_LIMIT -> "The reconnect limit was reached. Check the network and try explicitly again."
+                                RelayProblem.UPGRADE_REQUIRED -> "An incoming relay packet requires the end-to-end messaging upgrade."
                                 RelayProblem.NETWORK -> "The connection was interrupted. A retry uses fresh authentication."
                                 null -> if (model.status.phase == RelayPhase.CONNECTED) "No message has been delivered. This is a relay connection, not a Mac delivery receipt." else model.notice
                             })

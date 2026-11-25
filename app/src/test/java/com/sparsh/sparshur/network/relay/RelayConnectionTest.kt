@@ -2,6 +2,7 @@ package com.sparsh.sparshur.network.relay
 
 import com.google.crypto.tink.subtle.Ed25519Sign
 import com.google.crypto.tink.subtle.Ed25519Verify
+import java.util.Base64
 import java.util.concurrent.Executors
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
@@ -16,7 +17,9 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
+import okio.ByteString
 import okio.ByteString.Companion.encodeUtf8
+import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
@@ -28,18 +31,24 @@ class RelayConnectionTest {
     private val server = MockWebServer()
     private val connections = mutableListOf<RelayConnection>()
     private val statuses = LinkedBlockingQueue<RelayStatus>()
-    private val received = LinkedBlockingQueue<String>()
+    private val received = LinkedBlockingQueue<RelayFrame>()
+    private val acknowledgements = LinkedBlockingQueue<RelayFrame.Acknowledgement>()
+    private val peer = "22222222-2222-4222-8222-222222222222"
+    private val now = 2_000_000_000L
+    private val relayId = "mini-test"
     private val signatures = AtomicInteger()
-    private val testVector = JSONObject(javaClass.classLoader!!.getResourceAsStream("relay-auth-test-vectors.json")!!
+    private val testVector = JSONObject(javaClass.classLoader!!.getResourceAsStream("relay-auth.json")!!
         .bufferedReader().use { it.readText() })
     private val device = testVector.getString("device_id")
     private val session = testVector.getString("session_id")
-    private val nonce = testVector.getString("challenge")
+    private fun bytes(name: String) = Base64.getDecoder().decode(testVector.getString(name))
+    private fun socketChallenge(hello: RelayFrame.Hello, expiresAt: ULong = (now + 20).toULong()) =
+        RelayFrame.Challenge(RelayChallenge(relayId, session, hello.nonce, bytes("challenge").toByteString(), expiresAt))
     private val signer = object : RelaySigner {
         override val deviceId = device
         override fun sign(message: ByteArray): ByteArray {
             signatures.incrementAndGet()
-            return Ed25519Sign(RelayAuth.decoded(testVector.getString("seed"), 32)).sign(message)
+            return Ed25519Sign(bytes("signing_seed")).sign(message)
         }
     }
 
@@ -49,7 +58,8 @@ class RelayConnectionTest {
         server.start()
     }
 
-    private fun endpoint() = RelayEndpoint.parse("wss://localhost:${server.port}${RelayEndpoint.PATH}")
+    private fun destination(host: String = "localhost") =
+        RelayConfiguration(RelayEndpoint.parse("wss://$host:${server.port}${RelayEndpoint.PATH}"), relayId)
 
     private fun trustedClient(): OkHttpClient {
         val trust = HandshakeCertificates.Builder().addTrustedCertificate(certificate.certificate).build()
@@ -58,16 +68,20 @@ class RelayConnectionTest {
     }
 
     private fun connection(client: OkHttpClient = trustedClient(), timing: RelayTiming = RelayTiming(), authSigner: RelaySigner = signer): RelayConnection =
-        RelayConnection(endpoint(), authSigner, client, Executors.newSingleThreadScheduledExecutor(), timing, statuses::offer)
+        RelayConnection(destination(), authSigner, client, Executors.newSingleThreadScheduledExecutor(), timing,
+            now = { now }, onAcknowledgement = { acknowledgements.offer(it) }, onStatus = { statuses.offer(it) })
             .also(connections::add)
 
     private fun queue(listener: WebSocketListener, protocol: String = RelayEndpoint.SUBPROTOCOL) {
         server.enqueue(MockResponse.Builder().webSocketUpgrade(listener).addHeader("Sec-WebSocket-Protocol", protocol).build())
     }
 
-    private fun challenge() = "{\"version\":1,\"type\":\"challenge\",\"session_id\":\"$session\",\"challenge\":\"$nonce\"}"
-    private fun ready(id: String = device, sid: String = session) =
-        "{\"version\":1,\"type\":\"ready\",\"device_id\":\"$id\",\"session_id\":\"$sid\"}"
+    private fun ready(id: String = device, sid: String = session) = RelayFrame.Ready(id, sid).encode()
+
+    private fun packet(sender: String = device, recipient: String = peer) = RelayPacket(
+        sender, recipient, "55555555-5555-4555-8555-555555555555", "018bcfe5-6800-7000-8000-000000000001",
+        "010203".encodeUtf8(), RelayPacket.Kind.ENVELOPE
+    )
 
     private fun awaitPhase(phase: RelayPhase): RelayStatus {
         val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
@@ -81,11 +95,19 @@ class RelayConnectionTest {
         error("unreachable")
     }
 
-    private fun exchanging(onAuth: (WebSocket) -> Unit = { it.send(ready()); Unit }) = object : WebSocketListener() {
-        override fun onMessage(webSocket: WebSocket, text: String) {
-            received.offer(text)
-            val frame = JSONObject(text)
-            if (frame.getString("type") == "hello") webSocket.send(challenge()) else onAuth(webSocket)
+    private fun exchanging(
+        onSubmit: (WebSocket, RelayPacket) -> Unit = { _, _ -> },
+        onAuth: (WebSocket) -> Unit = { it.send(ready()); Unit }
+    ) = object : WebSocketListener() {
+        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            val frame = RelayFrame.decode(bytes)
+            received.offer(frame)
+            when (frame) {
+                is RelayFrame.Hello -> webSocket.send(socketChallenge(frame).encode())
+                is RelayFrame.Authenticate -> onAuth(webSocket)
+                is RelayFrame.Submit -> onSubmit(webSocket, frame.packet)
+                else -> error("Unexpected client frame")
+            }
         }
     }
 
@@ -100,15 +122,14 @@ class RelayConnectionTest {
         val connection = connection()
         connection.connect()
         assertEquals(RelayPhase.CONNECTED, awaitPhase(RelayPhase.CONNECTED).phase)
-        val hello = JSONObject(checkNotNull(received.poll(2, TimeUnit.SECONDS)))
-        val auth = JSONObject(checkNotNull(received.poll(2, TimeUnit.SECONDS)))
-        assertFalse(auth.has("seed"))
-        assertFalse(auth.has("public_key")) // Must use an administrator-enrolled key.
-        val transcript = RelayAuth.transcript(endpoint(), device, hello.getString("client_nonce"), session, nonce)
-        Ed25519Verify(RelayAuth.decoded(testVector.getString("public_key"), 32))
-            .verify(RelayAuth.decoded(auth.getString("signature"), 64), transcript)
+        val hello = received.poll(2, TimeUnit.SECONDS) as RelayFrame.Hello
+        val auth = received.poll(2, TimeUnit.SECONDS) as RelayFrame.Authenticate
+        assertEquals(device, auth.deviceId)
+        assertEquals(socketChallenge(hello).value, auth.value)
+        val transcript = RelayAuth.transcript(destination(), device, auth.value)
+        Ed25519Verify(bytes("signing_public_key")).verify(auth.signature.toByteArray(), transcript)
         val upgrade = checkNotNull(server.takeRequest(2, TimeUnit.SECONDS))
-        assertEquals("/bridge/v1/ws", upgrade.url.encodedPath)
+        assertEquals("/v1/relay", upgrade.url.encodedPath)
         assertEquals(RelayEndpoint.SUBPROTOCOL, upgrade.headers["Sec-WebSocket-Protocol"])
         assertEquals(TlsVersion.TLS_1_3, upgrade.handshake?.tlsVersion)
         assertEquals(1, signatures.get())
@@ -128,9 +149,9 @@ class RelayConnectionTest {
     @Test fun trustedCertificateForWrongHostnameStillFailsBeforeSigning() {
         startServer()
         queue(exchanging())
-        val destination = RelayEndpoint.parse("wss://127.0.0.1:${server.port}${RelayEndpoint.PATH}")
+        val destination = destination("127.0.0.1")
         val connection = RelayConnection(destination, signer, trustedClient(), Executors.newSingleThreadScheduledExecutor(),
-            RelayTiming(), statuses::offer).also(connections::add)
+            RelayTiming(), now = { now }, onStatus = { statuses.offer(it) }).also(connections::add)
         connection.connect()
         assertEquals(RelayProblem.TLS, awaitPhase(RelayPhase.FAILED).problem)
         assertEquals(0, signatures.get())
@@ -169,7 +190,7 @@ class RelayConnectionTest {
             awaitPhase(RelayPhase.STOPPED)
         } finally { release.countDown(); stopper.shutdownNow() }
         assertTrue(finished.await(3, TimeUnit.SECONDS))
-        assertEquals("hello", JSONObject(checkNotNull(received.poll(2, TimeUnit.SECONDS))).getString("type"))
+        assertTrue(received.poll(2, TimeUnit.SECONDS) is RelayFrame.Hello)
         assertNull(received.poll(200, TimeUnit.MILLISECONDS))
         assertNull(statuses.poll(200, TimeUnit.MILLISECONDS))
     }
@@ -186,7 +207,7 @@ class RelayConnectionTest {
     @Test fun readyBeforeChallengeCannotAuthenticateASession() {
         startServer()
         queue(object : WebSocketListener() {
-            override fun onMessage(webSocket: WebSocket, text: String) { webSocket.send(ready()) }
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) { webSocket.send(ready()) }
         })
         connection().connect()
         assertEquals(RelayProblem.PROTOCOL, awaitPhase(RelayPhase.FAILED).problem)
@@ -195,33 +216,33 @@ class RelayConnectionTest {
 
     @Test fun readyForAnotherIdentityCannotAuthenticateASession() {
         startServer()
-        queue(exchanging { it.send(ready("33333333-3333-4333-8333-333333333333")); Unit })
+        queue(exchanging { it.send(ready(peer)); Unit })
         connection().connect()
         assertEquals(RelayProblem.PROTOCOL, awaitPhase(RelayPhase.FAILED).problem)
     }
 
     @Test fun readyForAnotherSessionCannotAuthenticateASession() {
         startServer()
-        queue(exchanging { it.send(ready(sid = "44444444-4444-4444-8444-444444444444")); Unit })
+        queue(exchanging { it.send(ready(sid = peer)); Unit })
         connection().connect()
         assertEquals(RelayProblem.PROTOCOL, awaitPhase(RelayPhase.FAILED).problem)
     }
 
     @Test fun secondChallengeCannotTurnClientIntoARepeatedSigningOracle() {
         startServer()
-        queue(exchanging { it.send(challenge()); Unit })
+        queue(exchanging { it.send(socketChallenge(RelayFrame.Hello(device, ByteArray(32).toByteString())).encode()); Unit })
         connection().connect()
         assertEquals(RelayProblem.PROTOCOL, awaitPhase(RelayPhase.FAILED).problem)
         assertEquals(1, signatures.get())
     }
 
-    @Test fun binaryAndOversizeControlsAreRejected() {
+    @Test fun textAndOversizedBinaryAreRejected() {
         startServer()
         queue(object : WebSocketListener() {
-            override fun onMessage(webSocket: WebSocket, text: String) { webSocket.send("not a control".encodeUtf8()) }
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) { webSocket.send("not a binary frame") }
         })
         queue(object : WebSocketListener() {
-            override fun onMessage(webSocket: WebSocket, text: String) { webSocket.send("a".repeat(2049)) }
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) { webSocket.send(ByteArray(MAX_RELAY_FRAME + 1).toByteString()) }
         })
         val connection = connection()
         connection.connect()
@@ -234,8 +255,8 @@ class RelayConnectionTest {
     @Test fun authorizationFailureIsTerminalAndRequiresExplicitRetry() {
         startServer()
         queue(object : WebSocketListener() {
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                webSocket.send("{\"version\":1,\"type\":\"error\",\"code\":\"revoked\"}")
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                webSocket.send(RelayFrame.AuthRejected.encode())
             }
         })
         connection(timing = RelayTiming(baseRetryMs = 20, maxRetryMs = 40)).connect()
@@ -247,15 +268,15 @@ class RelayConnectionTest {
     @Test fun authenticationTimeoutHasABoundedRetryBudgetAndFreshNonce() {
         startServer()
         repeat(2) { queue(object : WebSocketListener() {
-            override fun onMessage(webSocket: WebSocket, text: String) { received.offer(text) }
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) { received.offer(RelayFrame.decode(bytes)) }
         }) }
         connection(timing = RelayTiming(deadlineMs = 300, baseRetryMs = 30, maxRetryMs = 30, maxRetries = 1)).connect()
         val failure = awaitPhase(RelayPhase.FAILED)
         assertEquals(RelayProblem.RETRY_LIMIT, failure.problem)
         assertEquals(1, failure.retry)
-        val first = JSONObject(checkNotNull(received.poll(2, TimeUnit.SECONDS)))
-        val second = JSONObject(checkNotNull(received.poll(2, TimeUnit.SECONDS)))
-        assertNotEquals(first.getString("client_nonce"), second.getString("client_nonce"))
+        val first = received.poll(2, TimeUnit.SECONDS) as RelayFrame.Hello
+        val second = received.poll(2, TimeUnit.SECONDS) as RelayFrame.Hello
+        assertNotEquals(first.nonce, second.nonce)
         assertEquals(0, signatures.get())
         assertEquals(2, server.requestCount)
     }
@@ -263,7 +284,7 @@ class RelayConnectionTest {
     @Test fun disconnectCancelsScheduledReconnectAndOldCallbacksCannotReviveIt() {
         startServer()
         queue(object : WebSocketListener() {
-            override fun onMessage(webSocket: WebSocket, text: String) { webSocket.close(1012, "restart") }
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) { webSocket.close(1012, "restart") }
         })
         val connection = connection(timing = RelayTiming(baseRetryMs = 800, maxRetryMs = 800))
         connection.connect()
@@ -291,5 +312,57 @@ class RelayConnectionTest {
         assertEquals(RelayProblem.RETRY_LIMIT, awaitPhase(RelayPhase.FAILED).problem)
         assertEquals(2, signatures.get())
         assertEquals(2, server.requestCount)
+    }
+
+    @Test fun staleChallengeNeverReachesTheSigner() {
+        startServer()
+        queue(object : WebSocketListener() {
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                val hello = RelayFrame.decode(bytes) as RelayFrame.Hello
+                webSocket.send(socketChallenge(hello, now.toULong()).encode())
+            }
+        })
+        connection().connect()
+        assertEquals(RelayProblem.PROTOCOL, awaitPhase(RelayPhase.FAILED).problem)
+        assertEquals(0, signatures.get())
+    }
+
+    @Test fun deliveryRequiresTheEndToEndUpgradeAndDoesNotRetry() {
+        startServer()
+        queue(exchanging {
+            it.send(ready())
+            it.send(RelayFrame.Deliver(packet(peer, device)).encode())
+        })
+        connection(timing = RelayTiming(baseRetryMs = 20)).connect()
+        awaitPhase(RelayPhase.CONNECTED)
+        assertEquals(RelayProblem.UPGRADE_REQUIRED, awaitPhase(RelayPhase.FAILED).problem)
+        assertNull(statuses.poll(150, TimeUnit.MILLISECONDS))
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test fun acknowledgementsMustMatchThePendingMessageAndDigest() {
+        startServer()
+        val remote = LinkedBlockingQueue<WebSocket>()
+        val submissions = LinkedBlockingQueue<RelayPacket>()
+        queue(exchanging(onSubmit = { socket, packet -> remote.offer(socket); submissions.offer(packet) }))
+        val connection = connection()
+        connection.connect()
+        awaitPhase(RelayPhase.CONNECTED)
+        val packet = packet()
+        connection.sendPrepared(packet)
+        val socket = checkNotNull(remote.poll(2, TimeUnit.SECONDS))
+        assertEquals(packet, submissions.poll(2, TimeUnit.SECONDS))
+        assertThrows(IllegalArgumentException::class.java) {
+            connection.sendPrepared(packet.copy(protectedBody = "different".encodeUtf8()))
+        }
+        socket.send(RelayFrame.Forwarded(packet.messageId, packet.digest()).encode())
+        val ack = acknowledgements.poll(2, TimeUnit.SECONDS)
+        assertTrue(ack is RelayFrame.Forwarded)
+        assertEquals(packet.digest(), ack?.digest)
+        connection.sendPrepared(packet)
+        assertEquals(packet, submissions.poll(2, TimeUnit.SECONDS))
+        socket.send(RelayFrame.Unavailable(packet.messageId, ByteArray(32).toByteString()).encode())
+        assertEquals(RelayProblem.PROTOCOL, awaitPhase(RelayPhase.FAILED).problem)
+        assertNull(acknowledgements.poll())
     }
 }

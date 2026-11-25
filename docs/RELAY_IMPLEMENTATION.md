@@ -159,7 +159,7 @@ spec. This is a review proposal, not a rule enabled by the connection milestone.
 
 | Milestone | Android | Go relay / mini | Receiving Mac | Acceptance |
 |---|---|---|---|---|
-| 1 — connection foundation (this change) | WSS config validation, TLS 1.3, existing wrapped Ed25519 signer, challenge auth, state/deadlines/jitter/cancellation; debug foreground screen | Implement exact RELAY_V1 auth, explicit enrolled-key map and session ownership | Implement same client auth | Public vectors + TLS tests; later Android/Go/Swift real-auth proof |
+| 1 — connection foundation (implemented) | Debug foreground WSS with TLS 1.3, exact URL and relay ID, wrapped signing identity, strict protobuf and bounded submission correlation | Offline enrollment, socket-bound challenge auth, session replacement and authorized opaque routing | Shared protobuf transport, signing from loaded identity, public enrollment diagnostics | Shared auth/wire vectors and local TLS tests. Live phone and Mac authentication via the deployed mini remains pending. |
 | 2 — relay-compatible pairing and envelope | New pairing store/QR flow; Android receive HPKE key; v3 seal/open/receipt tests; protected pending pairing recovery | Authenticate already enrolled peers; bounded short-lived pair routes; forward opaque proof frames | QR/transcript upgrade, confirm both key sets; HPKE interop | Fresh QR on trusted display; no QR secret at relay; substituted keys/context/expired/replayed confirmations rejected |
 | 3 — live text path | Wire Devices/Transfer to selected relay pairing; async sends; verify signed recipient receipts | Pair-scoped live routing and receipt return path; explicit recipient-offline result | WSS receive, verify/decrypt, persist defined result, signed receipt | Phone mobile data ↔ Mac Wi-Fi via mini; sender success only after verified recipient receipt; both old labs still work |
 | 4 — durable store-and-forward | Keystore-protected outbox/inbox, one drainer, exact retries after process death, cancellation/expiry UI | SQLite ciphertext+receipt queue, transactions, TTL, quotas and recipient acknowledgements | Atomic durable inbox/dedup/result, restart recovery | Kill/restart each component at every commit/ack boundary; lost receipts and duplicate/reordered traffic cannot lose or duplicate committed results |
@@ -167,21 +167,22 @@ spec. This is a review proposal, not a rule enabled by the connection milestone.
 | 6 — Android background and SMS | Network-aware rescheduling, FCM wake, reviewed finite foreground work; SMS receiver/backfill gated per recipient | FCM data wake with no content, TTL queue/quotas and policy-aware removal | SMS typed receive/history; consent and notifications | Real-phone Doze/OEM/network-switch testing; Off/default/invalid policy sends no SMS; queued items re-evaluated after rule changes |
 | 7 — multi-device and hardening | Signed membership verification, add/revoke UX, per-recipient fan-out | Advisory roster, per-route authorization, rate limits and metrics | Same verified membership chain and revocation | Third-device add/revoke; fuzzing, chaos/load, protocol review and operational recovery drill |
 
-Milestones 2–7 are planned, not implemented here. Preserve owner checkpoints for
-the broader project phases. New dependencies beyond the agreed stack still need
-discussion. Use JSON only for this narrowly specified connection milestone;
-resolve Kotlin/Swift/Go Protobuf libraries via ADR before the payload wire format.
-Do not accidentally turn the diagnostic JSON into the permanent production envelope.
+Milestones 2–7 require the owner protocol and crypto review. The existing
+transport uses the strict protobuf subset in the Mac checkout's
+`spec/relay_transport.proto`. Endpoint envelope bytes and receiving keys are
+part of the later milestones.
 
 ## Android structure and integration boundaries
 
 - `network/relay/RelayEndpoint.kt`: strict service URL, separate from LocalEndpoint.
-- `RelayAuth.kt`, `KeystoreRelaySigner.kt`: narrow control codec, purpose-bound
-  bytes and per-operation unwrapping/wiping of existing signing seed.
+- `RelayWire.kt`: strict protobuf frames and packet digest.
+- `RelayAuth.kt`, `KeystoreRelaySigner.kt`: purpose-bound signing bytes and
+  per-operation unwrapping/wiping of the existing signing seed.
 - `RelayConnection.kt`: one socket/controller, honest typed states, fresh auth,
   deadlines, bounded exponential reconnect, stale-callback invalidation and close.
 - `RelayViewModel.kt`, `RelayActivity.kt`: explicit debug diagnostics in Settings
-  → Mac mini relay; no payload API, background service or automatic connection.
+  → Mac mini relay. Incoming packets require the end-to-end upgrade, and the
+  UI does not expose packet submission.
 - Next add a message repository/transport interface; TransferViewModel should use
   a pairing's explicit transport version, not silently guess HTTP vs relay. The
   UI waits for a verified endpoint receipt. Widgets keep immutable destination IDs.
@@ -226,9 +227,9 @@ or when the mini is offline. A sensitive clip is always blocked before encryptio
 
 Connection tests must cover certificate/hostname rejection, TLS downgrade,
 redirects, unknown protocol, fresh nonces, wrong/duplicate/out-of-state controls,
-binary/oversize/duplicate-key/fuzzed input, retry exhaustion, fast flapping, explicit
-stop, stale callbacks and signing failure. Public OpenSSL/Tink auth vectors are
-available now; Go/Swift consumers are still required.
+text/oversized/malformed binary input, retry exhaustion, fast flapping, explicit
+stop, stale callbacks and signing failure. Go, Swift and Kotlin consume the
+same frozen vectors.
 
 Pairing/envelope gates require three-way public vectors, modified keys, bad MACs,
 invalid encodings, endpoint/relay swaps, pairing expiry/races/restarts, HPKE/tag/

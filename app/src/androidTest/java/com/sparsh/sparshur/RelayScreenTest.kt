@@ -16,7 +16,8 @@ class RelayScreenTest {
     @Test fun enteringAndRecreatingDiagnosticDoesNotConnectOrClaimDelivery() {
         compose.onNodeWithText("Connection only").assertIsDisplayed()
         compose.onNodeWithText("Disconnected").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Relay WSS URL").performTextInput("wss://relay.example.test/bridge/v1/ws")
+        compose.onNodeWithContentDescription("Relay WSS URL").performTextInput("wss://relay.example.test/v1/relay")
+        compose.onNodeWithContentDescription("Relay ID").performTextInput("mini-test")
         compose.runOnIdle {
             val model = ViewModelProvider(compose.activity)[RelayViewModel::class.java]
             assertEquals(RelayPhase.STOPPED, model.status.phase)
@@ -24,7 +25,8 @@ class RelayScreenTest {
         compose.activityRule.scenario.recreate()
         compose.onNodeWithText("Disconnected").assertIsDisplayed()
         compose.onNodeWithText("Authenticated to relay").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Relay WSS URL").assertTextContains("wss://relay.example.test/bridge/v1/ws")
+        compose.onNodeWithContentDescription("Relay WSS URL").assertTextContains("wss://relay.example.test/v1/relay")
+        compose.onNodeWithContentDescription("Relay ID").assertTextContains("mini-test")
         compose.runOnIdle { assertEquals(RelayPhase.STOPPED, ViewModelProvider(compose.activity)[RelayViewModel::class.java].status.phase) }
     }
 }
